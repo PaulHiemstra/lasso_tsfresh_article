@@ -16,33 +16,74 @@ def audio_to_dataframe(path):
     return ret_obj
 
 def abbreviate_label(s, max_len=20, connect_string='...'):
+    '''
+    Takes a string and abbreviates it when it is over the maximum length
+    
+    If a string is too large, the function will take the head and tail of the label
+    and connect them using the `connect_string`. This helps the readability of long
+    labels. 
+    
+    Parameters:
+        s (string): input label
+        max_len (int): the maximum length a label can be
+        connect_string (string): the string to connect the head and tail of the output label
+    '''
     if len(s) > max_len:
         return s[:int(max_len/2)] + connect_string + s[int(-max_len/2):]
     else:
         return s
 
 ## Coef path plots
-def plot_coef_paths(cv_results, category, X_data, coef_cutoff = '1e-8'):
-    feature_list = pd.Series(range(len(X_data.columns) + 1)) # +1 for intercept
-    feature_list.index =  list(X_data.columns) + ['intercept']
-    cs = cv_results.Cs_
+def ndarray_to_long(ndarray, iterables, names):
+    '''
+    Transform a multidimensional numpy array into a long format pandas DataFrame
+  
+    Parameters:
+        ndarray (ndarray): the multidimensional numpy array
+        iterables (list): labels per dimension, in practice a list of lists
+        names (list): the names of each of the dimensions
+        
+    Returns
+        A pandas DataFrame with x number of rows, where x is the number of values in the 
+        multidimensional array. The other columns in the DataFrame show which label in the 
+        multidimensional array the value had. 
+    '''
+    single_column_array = ndarray.reshape(ndarray.size, 1)
+    index = pd.MultiIndex.from_product(iterables, names=names)
+    return pd.DataFrame(single_column_array, index=index, columns=['coef_value']).reset_index()
 
-    def transform_coef_path(feature_index, feature_name):
-        return (
-                pd.DataFrame(cv_results.coefs_paths_[category][:,:,feature_index], columns=cs)
-                 .reset_index()
-                 .melt(id_vars='index', var_name='reg_strength', value_name='coef_value')
-                 .assign(feature_name=feature_name)
-              )
-    plot_data = pd.concat([transform_coef_path(value, index) for index, value in feature_list.iteritems()])
-    plot_data = plot_data.assign(reg_strength = np.log10(1/(2*plot_data["reg_strength"].astype('float'))))
-    mean_coef_values = plot_data.groupby(['feature_name']).mean()
-    relevant_features = mean_coef_values.query('coef_value > %s' % coef_cutoff).index
+def plot_coef_paths(cv_results, category, X_data, coef_cutoff = '1e-8'):
+    '''
+    Create a plot that shows the coefficient paths versus the regularisation strength
+    
+    Parameters:
+        cv_results: outcome of `LogisticRegressionCV`
+        category: which of the possible prediction categories do you want to make the plot for. 
+        X_data: the training data used for building the model
+        coef_cutoff: if the mean coefficient value of a feature is lower than this cutoff it is not shown in the model
+        
+    Returns:
+        plotnine ggplot object
+    ''' 
+    # wide to long data
+    plot_data = ndarray_to_long(cv_results.coefs_paths_[category], 
+               [range(cv_results.coefs_paths_[category].shape[0]), 
+                                    cv_results.Cs_,
+                                    list(X_data.columns) + ['intercept']],
+               ['folds', 'reg_strength','feature_name'])
+    
+    # Transform to alpha and apply log
+    plot_data = plot_data.assign(reg_strength = np.log10(1/(2*plot_data["reg_strength"].astype('float'))))  # transform to alpha
+    # only keep features that have a mean coef size above a cutoff
+    mean_coef_values = plot_data.groupby(['feature_name']).mean() 
+    relevant_features = mean_coef_values.query('abs(coef_value) > %s' % coef_cutoff).index
     plot_data = plot_data[plot_data['feature_name'].isin(relevant_features)]
 
+    # Sort features from high to low coef value
     coef_from_high_to_low = plot_data.groupby(['feature_name']).mean().abs().sort_values(by='coef_value', ascending=False).index
     plot_data['feature_name'] = pd.Categorical(plot_data['feature_name'], categories=coef_from_high_to_low)
 
+    # Create input data for ribbon
     plot_data_min_max = plot_data.groupby(['reg_strength', 'feature_name']).agg(['min', 'max'])
     plot_data_min_max.columns = ['_'.join(col).strip() for col in plot_data_min_max.columns.values] 
     plot_data_min_max = plot_data_min_max.reset_index()
@@ -50,7 +91,7 @@ def plot_coef_paths(cv_results, category, X_data, coef_cutoff = '1e-8'):
     return (
         ggplot(plot_data) + 
           geom_ribbon(plot_data_min_max, aes(x='reg_strength', ymin='coef_value_min', ymax='coef_value_max'), fill='lightgrey') + 
-          geom_line(aes(x='reg_strength', y='coef_value', group='index'), alpha=0.3) + 
+          geom_line(aes(x='reg_strength', y='coef_value', group='folds'), alpha=0.3) + 
           facet_wrap('~ feature_name', labeller=abbreviate_label) + 
           labs(x='Regularisation strength [log10(1/2C)]', y='Coefficient value [-]')
     )

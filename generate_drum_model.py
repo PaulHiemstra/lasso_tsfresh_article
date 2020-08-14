@@ -11,9 +11,6 @@ from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.svm import l1_min_c
 from pathlib import Path
 
-def sample_files(path, frac):
-    return pd.Series(glob.glob(path + '/*')).sample(frac=frac)
-
 print('Reading data...')
 wav_files = glob.glob('sounds/kick/*.wav') + glob.glob('sounds/snare/*.wav') + glob.glob('sounds/tom/*.wav')
 all_audio = pd.concat([audio_to_dataframe(path) for path in wav_files])
