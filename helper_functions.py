@@ -5,6 +5,18 @@ from plotnine import *
 from sklearn.metrics import confusion_matrix
 
 def audio_to_dataframe(path):
+    '''
+    Read a stereo wav file from path and return it as a pandas DataFrame
+    
+    Parameters:
+        path (string): the path to the wav file
+    
+    Returns:
+        A pandas DataFrame with four columns:
+            - left/right, the amplitude of the left and right channel
+            - time_id, the time index in the wav file sample
+            - file_id, the wave file the data was read from
+    '''
     from scipy.io import wavfile
     
     sample_rate, data = wavfile.read(path)
@@ -34,7 +46,7 @@ def abbreviate_label(s, max_len=20, connect_string='...'):
         return s
 
 ## Coef path plots
-def ndarray_to_long(ndarray, iterables, names):
+def ndarray_to_long(ndarray, iterables, names, value_colname = 'coef_value'):
     '''
     Transform a multidimensional numpy array into a long format pandas DataFrame
   
@@ -42,6 +54,7 @@ def ndarray_to_long(ndarray, iterables, names):
         ndarray (ndarray): the multidimensional numpy array
         iterables (list): labels per dimension, in practice a list of lists
         names (list): the names of each of the dimensions
+        value_colname (string): the name of the 1-d column where the content of the ndarray is dumped
         
     Returns
         A pandas DataFrame with x number of rows, where x is the number of values in the 
@@ -50,7 +63,7 @@ def ndarray_to_long(ndarray, iterables, names):
     '''
     single_column_array = ndarray.reshape(ndarray.size, 1)
     index = pd.MultiIndex.from_product(iterables, names=names)
-    return pd.DataFrame(single_column_array, index=index, columns=['coef_value']).reset_index()
+    return pd.DataFrame(single_column_array, index=index, columns=[value_colname]).reset_index()
 
 def plot_coef_paths(cv_results, category, X_data, coef_cutoff = '1e-8'):
     '''
@@ -97,23 +110,36 @@ def plot_coef_paths(cv_results, category, X_data, coef_cutoff = '1e-8'):
     )
 
 ## Overall performance plots
-def get_data_per_model(data_for_model, model_name, cs_values):
-    plot_data = (
-        pd.DataFrame(data_for_model, columns=cs_values)
-          .melt(var_name='reg_strength', value_name='cv_score')
-          .groupby('reg_strength')
-          .agg(['min', 'max'])
-    )
-
-    # Strip multi-index to single index (https://stackoverflow.com/questions/14507794/pandas-how-to-flatten-a-hierarchical-index-in-columns)
-    plot_data.columns = ['_'.join(col).strip() for col in plot_data.columns.values] 
-    plot_data = plot_data.reset_index()
-    return plot_data.assign(reg_strength = np.log10(1/(2*plot_data["reg_strength"])),
-                            model_name = model_name)
+def get_data_per_model(cv_results, category):
+    '''
+    Get the accuracy score for the submodel of each category
+    '''
+    return ndarray_to_long(cv_results.scores_[category],     
+                    [range(5), cv_results.Cs_],
+                    ['folds', 'reg_strength'], 
+                    value_colname = 'cv_score').assign(model_name = category)
 
 def plot_reg_strength_vs_score(cv_results):
-    plot_data = pd.concat([get_data_per_model(cv_results.scores_[mod], mod, cv_results.Cs_) for mod in cv_results.scores_])
-
+    '''
+    Plot the crossvalidation accuracy scores versus regularisation strength for each of the submodels
+    
+    Parameters:
+        cv_results: outcome of `LogisticRegressionCV`
+    
+    Returns:
+        plotnine ggplot object
+    '''
+    plot_data = pd.concat([get_data_per_model(cv_results, mod) for mod in cv_results.classes_])
+    plot_data = plot_data.assign(reg_strength = np.log10(1/(2*plot_data["reg_strength"].astype('float'))))
+    plot_data = (
+        plot_data
+          .drop(columns=['folds'])
+          .groupby(['reg_strength', 'model_name'])
+          .agg(['min', 'max'])
+    )
+    plot_data.columns = ['_'.join(col).strip() for col in plot_data.columns.values]     # Collapse MultiIndex in columns
+    plot_data = plot_data.reset_index()
+    
     return (
         ggplot(plot_data) + 
           geom_ribbon(aes(x='reg_strength', ymin='cv_score_min', ymax='cv_score_max'), fill='lightgrey') + 
